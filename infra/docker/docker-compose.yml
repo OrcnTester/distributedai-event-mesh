@@ -1,0 +1,20 @@
+version: "3.9"
+
+services:
+  user-service:
+    build:
+      context: ../../services/user-service
+      dockerfile: Dockerfile
+    container_name: user-service
+    ports:
+      - "8081:8081"
+
+  ai-gateway:
+    build:
+      context: ../../services/ai-gateway
+      dockerfile: Dockerfile
+    container_name: ai-gateway
+    ports:
+      - "8090:8090"
+    depends_on:
+      - user-service
