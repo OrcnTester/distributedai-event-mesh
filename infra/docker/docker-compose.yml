@@ -30,6 +30,14 @@ services:
       - "8080:8080"
     networks:
       - appnet
+      
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    ports:
+      - "6333:6333"
+    networks:
+      - appnet
 
   user-service:
     build:
