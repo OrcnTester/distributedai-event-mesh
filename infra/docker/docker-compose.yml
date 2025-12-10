@@ -1,4 +1,36 @@
+version: "3.9"
+
 services:
+  redpanda:
+    image: redpandadata/redpanda:latest
+    container_name: redpanda
+    command:
+     - redpanda
+     - start
+     - --overprovisioned
+     - --smp=1
+     - --node-id=0
+     - --check=false
+     - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+     - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+    ports:
+      - "9092:9092"
+      - "9644:9644"
+    networks:
+      - appnet
+
+  redpanda-console:
+    image: redpandadata/console:latest
+    container_name: redpanda-console
+    depends_on:
+      - redpanda
+    environment:
+      - KAFKA_BROKERS=redpanda:9092
+    ports:
+      - "8080:8080"
+    networks:
+      - appnet
+
   user-service:
     build:
       context: ../../services/user-service
@@ -6,6 +38,10 @@ services:
     container_name: user-service
     ports:
       - "8081:8081"
+    networks:
+      - appnet
+    depends_on:
+      - redpanda
 
   ai-gateway:
     build:
@@ -14,5 +50,11 @@ services:
     container_name: ai-gateway
     ports:
       - "8090:8090"
+    networks:
+      - appnet
     depends_on:
+      - redpanda
       - user-service
+
+networks:
+  appnet:

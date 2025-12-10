@@ -19,3 +19,23 @@ async def proxy_users():
         resp = await client.get("http://user-service:8081/users")
         resp.raise_for_status()
         return resp.json()
+    
+import asyncio
+from aiokafka import AIOKafkaConsumer
+
+async def consume_events():
+    consumer = AIOKafkaConsumer(
+        "user.events",
+        bootstrap_servers="redpanda:9092",
+        group_id="ai-gateway-group"
+    )
+    await consumer.start()
+    try:
+        async for msg in consumer:
+            print("🔥 AI-Gateway received event:", msg.value.decode())
+    finally:
+        await consumer.stop()
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(consume_events())
