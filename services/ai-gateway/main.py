@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Header, HTTPException, status
 import httpx
 
 import asyncio
@@ -103,114 +103,96 @@ async def consume_events():
     finally:
         await consumer.stop()
 
-    consumer = AIOKafkaConsumer(
-        "user.events",
-        bootstrap_servers="redpanda:9092",
-        group_id="ai-gateway-group"
-    )
-    await consumer.start()
-    try:
-        async for msg in consumer:
-            raw = msg.value.decode()
-            print("🔥 AI-Gateway received event:", raw)
-
-            try:
-                data = json.loads(raw)
-                user_id = data.get("id")
-                email = data.get("email", "")
-                name = data.get("name", "")
-
-                text = f"{name} <{email}>"
-                emb = generate_embedding(text)
-
-                qdrant.upsert(
-                    collection_name=COLLECTION_NAME,
-                    points=[
-                        PointStruct(
-                            id=user_id,
-                            vector=emb,
-                            payload={
-                                "email": email,
-                                "name": name,
-                            },
-                        )
-                    ],
-                )
-                print(f"💾 Stored embedding for user {user_id} in Qdrant.")
-            except Exception as e:
-                print("Error processing event:", e)
-
-    finally:
-        await consumer.stop()
 @app.on_event("startup")
 async def startup_event():
     ensure_collection()
     asyncio.create_task(consume_events())
     
 from fastapi import Query, HTTPException
+class TenantContext:
+    def __init__(self, tenant_id: str, user_id: str):
+        self.tenant_id = tenant_id
+        self.user_id = user_id
 
+
+async def get_tenant_context(authorization: str = Header(None)):
+    if not authorization:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing Authorization header",
+        )
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Authorization header format",
+        )
+
+    token = authorization[len("Bearer ") :]
+    parts = token.split(":")
+    if len(parts) != 2:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token format, expected tenant-id:user-id",
+        )
+
+    tenant_id, user_id = parts
+    return TenantContext(tenant_id=tenant_id, user_id=user_id)
 @app.get("/ai/users/search")
 def search_users(
-    tenant_id: str = Query(..., alias="tenant_id", description="Tenant identifier"),
     query: str = Query(..., description="Search query"),
+    tenant: TenantContext = Depends(get_tenant_context),
 ):
-    # 1) Query için embedding üret
+    # 1) Sorgu için embedding üret
     emb = generate_embedding(query)
 
-    # 2) Qdrant search request body
+    # 2) Qdrant REST search payload
     search_payload = {
         "vector": emb,
         "limit": 5,
-        "with_payload": True,
         "filter": {
             "must": [
                 {
                     "key": "tenantId",
-                    "match": {"value": tenant_id},
+                    "match": {"value": tenant.tenant_id},
                 }
             ]
         },
+        "with_payload": True,   # 🔥 payload alanlarını da getir
+        "with_vector": False,   # vektöre ihtiyacımız yok, response’u hafiflet
     }
 
-    # 3) Qdrant REST API'ye direkt httpx ile vur
+    # 3) Qdrant'a HTTP POST (REST API)
+    url = f"http://{QDRANT_HOST}:{QDRANT_PORT}/collections/{COLLECTION_NAME}/points/search"
+
     try:
-        resp = httpx.post(
-            f"http://{QDRANT_HOST}:{QDRANT_PORT}/collections/{COLLECTION_NAME}/points/search",
-            json=search_payload,
-            timeout=5.0,
-        )
-    except Exception as e:
+        resp = httpx.post(url, json=search_payload, timeout=5.0)
+        resp.raise_for_status()
+    except httpx.HTTPError as e:
+        # Hata durumunda FastAPI 500 dönsün
         raise HTTPException(
             status_code=500,
-            detail=f"Error talking to Qdrant: {e}",
+            detail=f"Qdrant search error: {str(e)}",
         )
 
-    if resp.status_code != 200:
-        # Qdrant tarafında hata varsa, text olarak geri dönsün
-        raise HTTPException(
-            status_code=500,
-            detail=f"Qdrant error: {resp.text}",
-        )
-
-    body = resp.json()
-    points = body.get("result", []) or []
+    data = resp.json()
+    results = data.get("result", []) or []
 
     # 4) Response'u sadeleştir
-    results = []
-    for point in points:
-        payload = point.get("payload", {}) or {}
-        results.append(
+    out = []
+    for r in results:
+        payload = r.get("payload", {}) or {}
+        out.append(
             {
                 "user_id": payload.get("userId"),
                 "tenant_id": payload.get("tenantId"),
-                "score": point.get("score"),
+                "score": r.get("score"),
                 "email": payload.get("email"),
                 "name": payload.get("name"),
             }
         )
 
     return {
-        "tenant_id": tenant_id,
+        "tenant_id": tenant.tenant_id,
         "query": query,
-        "results": results,
+        "results": out,
     }

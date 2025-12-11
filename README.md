@@ -1,4 +1,33 @@
 # DistributedAI Event Mesh
+Bro, şu an elindeki setup:
+
+- Event-driven microservices (Go)  
+- Kafka / Redpanda  
+- AI Gateway (FastAPI)  
+- Vector DB (Qdrant)  
+- Multi-tenant isolation  
+- JWT-like auth + middleware design
+
+## Auth / JWT Simulation
+
+For local development, the system uses a very simple dev token format instead of real JWTs:
+
+```http
+Authorization: Bearer tenant-a:user-123
+```
+
+ -tenant-a → treated as the tenant identifier
+ -user-123 → treated as the user id
+
+-user-service wraps protected routes with a tenantMiddleware that:
+
+ -Parses the Authorization header
+ -Extracts tenant + user info
+ -Attaches them to the request context
+
+ai-gateway uses a FastAPI dependency (get_tenant_context) to do the same thing.
+
+In a real system, this would be replaced by proper JWT verification (signature, expiry, claims, etc.), but the overall architecture and middleware boundaries would remain the same.
 
 ## Multitenancy Model
 
