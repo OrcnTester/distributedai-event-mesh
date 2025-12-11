@@ -1,14 +1,40 @@
-from fastapi import FastAPI, HTTPException, Depends, Header, HTTPException, status
+from fastapi import FastAPI, Query, HTTPException, Depends, Header, HTTPException, status
 import httpx
-
+import time
 import asyncio
 import hashlib
 from typing import List
+
+import json
+from qdrant_client.http.models import PointStruct
 
 import numpy as np
 from aiokafka import AIOKafkaConsumer
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qm
+
+import redis.asyncio as redis
+
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from fastapi.responses import Response
+
+REQUEST_COUNTER = Counter(
+    "ai_gateway_requests_total",
+    "Total number of requests handled by ai-gateway",
+    ["path", "tenant"],
+)
+
+SEARCH_LATENCY = Histogram(
+    "ai_gateway_search_latency_seconds",
+    "Latency of /ai/users/search handler",
+    ["tenant"],
+)
+
+
+REDIS_HOST = "redis"
+REDIS_PORT =6379
+
+redis_client: redis.Redis | None = None
 
 QDRANT_HOST = "qdrant"
 QDRANT_PORT = 6333
@@ -34,6 +60,12 @@ app = FastAPI()
 USER_SERVICE_URL = "http://user-service:8081"
 
 
+@app.get("/metrics")
+def metrics():
+    data = generate_latest()
+    return Response(content=data, media_type=CONTENT_TYPE_LATEST)
+
+
 @app.get("/health")
 def health():
     return {"status": "ai-gateway OK"}
@@ -57,8 +89,6 @@ def generate_embedding(text: str) -> List[float]:
         return (arr).tolist()
     return (arr / norm).tolist()
 
-import json
-from qdrant_client.http.models import PointStruct
 async def consume_events():
     consumer = AIOKafkaConsumer(
         "user.events",
@@ -105,10 +135,19 @@ async def consume_events():
 
 @app.on_event("startup")
 async def startup_event():
+    global redis_client
+    # Qdrant koleksiyonunu hazırla
     ensure_collection()
-    asyncio.create_task(consume_events())
+
+    # Redis client
+    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
     
-from fastapi import Query, HTTPException
+    # Kafka consumer background task'i 
+    asyncio.create_task(consume_events())
+
+
+RATE_LIMIT_PER_MINUTE = 30 # örnek: tenant başına dakikada 30 istek
+    
 class TenantContext:
     def __init__(self, tenant_id: str, user_id: str):
         self.tenant_id = tenant_id
@@ -137,11 +176,43 @@ async def get_tenant_context(authorization: str = Header(None)):
 
     tenant_id, user_id = parts
     return TenantContext(tenant_id=tenant_id, user_id=user_id)
+
+async def rate_limit(tenant: TenantContext = Depends(get_tenant_context)):
+    """
+    Simple per-tenant, per-minute rate limiting using Redis.
+    Key pattern: rate:{tenantId}:{currentMinute}
+    """
+    if redis_client is None:
+        # Safety: Redis yoksa rate limit uygulama, ama log basılabilir
+        return
+
+    # current minute bucket (ör: 2024-01-01T12:30 → 20240101-1230)
+    minute_key = time.strftime("%Y%m%d-%H%M")
+    key = f"rate:{tenant.tenant_id}:{minute_key}"
+
+    # INCR + TTL
+    current = await redis_client.incr(key)
+    if current == 1:
+        # İlk istek ise TTL ayarla (60 saniye)
+        await redis_client.expire(key, 60)
+
+    if current > RATE_LIMIT_PER_MINUTE:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Rate limit exceeded for tenant {tenant.tenant_id}",
+        )
+
+
+
 @app.get("/ai/users/search")
 def search_users(
     query: str = Query(..., description="Search query"),
     tenant: TenantContext = Depends(get_tenant_context),
+    _rate_ok = Depends(rate_limit),
 ):
+    
+    start = time.time()
+    
     # 1) Sorgu için embedding üret
     emb = generate_embedding(query)
 
@@ -177,6 +248,9 @@ def search_users(
     data = resp.json()
     results = data.get("result", []) or []
 
+    duration = time.time() - start
+    SEARCH_LATENCY.labels(tenant=tenant.tenant_id).observe(duration)
+    
     # 4) Response'u sadeleştir
     out = []
     for r in results:

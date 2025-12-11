@@ -63,6 +63,14 @@ services:
     depends_on:
       - redpanda
       - user-service
+      
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - appnet
 
 networks:
   appnet:
