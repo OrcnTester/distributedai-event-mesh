@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: distributedai-config
+  namespace: distributedai
+data:
+  USER_SERVICE_PORT: "8081"
+  AI_GATEWAY_PORT: "8090"
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  QDRANT_HOST: "qdrant"
+  QDRANT_PORT: "6333"
+  KAFKA_BROKER: "redpanda:9092"
