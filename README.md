@@ -1,5 +1,4 @@
 # DistributedAI Event Mesh
-Bro, şu an elindeki setup:
 
 - Event-driven microservices (Go)  
 - Kafka / Redpanda  
