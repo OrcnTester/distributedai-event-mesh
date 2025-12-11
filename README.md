@@ -6,6 +6,9 @@
 - Vector DB (Qdrant)  
 - Multi-tenant isolation  
 - JWT-like auth + middleware design
+- Rate-limiting per Tenant
+- Prometheus metric-endpoint
+- Semantic search
 
 ## Auth / JWT Simulation
 
