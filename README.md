@@ -1,5 +1,33 @@
 # DistributedAI Event Mesh
 
+## Multitenancy Model
+
+This project simulates a simple multitenant architecture:
+
+- Each request to `user-service` carries a `X-Tenant-Id` header.
+- `POST /users/create` reads the tenant id, attaches it to the user entity, and publishes it in the `user.events` Kafka topic.
+- `ai-gateway` consumes `user.events`, generates embeddings, and stores them in Qdrant with:
+  - `tenantId`
+  - `userId`
+  - `email`
+  - `name`
+
+Qdrant uses a single `user_embeddings` collection, but queries are always filtered by `tenantId`:
+
+```http
+GET /ai/users/search?tenant_id=tenant-a&query=alice
+```
+
+This returns only users that belong to tenant-a, even if other tenants' data is stored in the same collection.
+
+The same pattern can be extended to:
+
+JWT claims (e.g. tenant_id in access tokens),
+
+per-tenant rate limiting,
+
+per-tenant configuration and quotas.
+
 ## Phase 2 – AI Enrichment & Vector Search
 
 In phase 2, `ai-gateway` consumes `user.events` from Redpanda (Kafka), generates deterministic demo embeddings, and stores them in Qdrant (vector DB).
